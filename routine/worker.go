@@ -1,30 +1,26 @@
 package routine
 
-type Worker struct {
-	id int
+type worker struct {
+	isWorking bool
 }
 
-func NewWorker(id int) Worker {
-	return Worker{
-		id: id,
-	}
-}
+func (w *worker) do(tasks <-chan func()) {
+	w.isWorking = true
+	go func() {
+		defer func() {
+			w.isWorking = false
+		}()
 
-func (worker Worker) Do(tasksChan <-chan Task, resultsChan chan<- TaskResult) {
-	for task := range tasksChan {
-		result := TaskResult{
-			TaskId:  task.Id,
-			Status:  "SUCCESSFUL",
-			Message: task.Message,
-		}
+		for task := range tasks {
+			if task == nil {
+				return
+			}
 
-		if err := task.Job(); err != nil {
-			result.Status = "FAILED"
-			result.Error = err
-		}
+			task()
 
-		if resultsChan != nil {
-			resultsChan <- result
+			if w.isWorking {
+				return
+			}
 		}
-	}
+	}()
 }

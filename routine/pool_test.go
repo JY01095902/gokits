@@ -1,125 +1,92 @@
+/*
+	go test -bench=. -memprofile mem.prof
+	go tool pprof -http :9402 mem.prof
+	go test -bench=. -test.benchmem
+*/
+
 package routine
 
 import (
-	"errors"
-	"strconv"
-	"strings"
+	"log"
+	"sync"
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 )
 
-func runNewPool(cnt int, list []string, prefix string) {
-	tasks := make(chan Task)
-	pool := NewPool(10, tasks)
-	pool.Run()
+func BenchmarkPool(b *testing.B) {
+	run := func() {
+		pool, _ := NewPool(10)
+		var wg sync.WaitGroup
+		cnt := 20
+		wg.Add(cnt)
+		for i := 1; i <= cnt; i++ {
+			go func(i int) {
+				pool.Execute(func() {
+					defer wg.Done()
 
-	for i := 0; i < cnt; i++ {
-		n := i
-		job := func() error {
-			val := prefix + time.Now().String()
-			list[n] = val
-
-			return nil
+					log.Printf("id: %d, time: %v", i, time.Now())
+				})
+			}(i)
 		}
 
-		tasks <- Task{
-			Id:  strconv.Itoa(n + 1),
-			Job: job,
-		}
+		wg.Wait()
+		pool.Destroy()
 	}
-	close(tasks)
 
-	pool.Wait()
-}
-
-func BenchmarkNewPool(b *testing.B) {
-	cnt := 100
-	list := make([]string, cnt)
-	prefix := "TEST"
 	for n := 0; n < b.N; n++ {
-		runNewPool(cnt, list, prefix)
+		run()
 	}
 }
 
 func TestNewPool(t *testing.T) {
-	cnt := 100
-	list := make([]string, cnt)
-	prefix := "TEST"
-	runNewPool(cnt, list, prefix)
-
-	Convey("测试线程池", t, func() {
-		So(len(list), ShouldEqual, cnt)
-		for i := range list {
-			So(list[i], ShouldStartWith, prefix)
-		}
-	})
-}
-
-func runNewPoolWithResultHandler(cnt int, list []string, errResults *[]TaskResult, prefix, msgPrefix, errMsg string) {
-	tasks := make(chan Task)
-	pool := NewPoolWithResultHandler(10, tasks, func(result TaskResult) {
-		if result.Status == "FAILED" {
-			*errResults = append(*errResults, result)
-		}
-	})
-	pool.Run()
-
-	for i := 0; i < cnt; i++ {
-		n := i
-		job := func() error {
-			val := prefix + time.Now().String()
-			list[n] = val
-
-			if n%2 == 0 {
-				return errors.New(errMsg)
-			}
-
-			return nil
-		}
-
-		tasks <- Task{
-			Id:      strconv.Itoa(n + 1),
-			Job:     job,
-			Message: msgPrefix + " " + strconv.Itoa(n),
-		}
+	tests := []struct {
+		given int
+		want  error
+	}{
+		{given: 10, want: nil},
+		{given: 0, want: ErrInvalidCapacity},
 	}
-	close(tasks)
 
-	pool.Wait()
-}
+	for _, test := range tests {
+		_, err := NewPool(test.given)
 
-func BenchmarkNewPoolWithResultHandler(b *testing.B) {
-	cnt := 100
-	list := make([]string, cnt)
-	errResults := []TaskResult{}
-	prefix := "TEST"
-	msgPrefix := "number is"
-	errMsg := "can not handle even number"
-	for n := 0; n < b.N; n++ {
-		runNewPoolWithResultHandler(cnt, list, &errResults, prefix, msgPrefix, errMsg)
+		assert.Equal(t, test.want, err)
 	}
 }
 
-func TestNewPoolWithResultHandler(t *testing.T) {
-	cnt := 100
-	list := make([]string, cnt)
-	errResults := []TaskResult{}
-	prefix := "TEST"
-	msgPrefix := "number is"
-	errMsg := "can not handle even number"
-	runNewPoolWithResultHandler(cnt, list, &errResults, prefix, msgPrefix, errMsg)
+func TestMaxWorkerCount(t *testing.T) {
+	tests := []struct {
+		givenMaxCap    int
+		givenWorkerCnt int
+		wantWorkerCnt  int
+	}{
+		{givenMaxCap: 10, givenWorkerCnt: 5, wantWorkerCnt: 5},
+		{givenMaxCap: 10, givenWorkerCnt: 20, wantWorkerCnt: 10},
+		{givenMaxCap: 10, givenWorkerCnt: 0, wantWorkerCnt: 0},
+		{givenMaxCap: 10, givenWorkerCnt: 10, wantWorkerCnt: 10},
+	}
 
-	Convey("测试带结果处理的线程池", t, func() {
-		So(len(list), ShouldEqual, cnt)
-		for i := range list {
-			So(strings.HasPrefix(list[i], prefix), ShouldBeTrue)
+	for _, test := range tests {
+		pool, _ := NewPool(test.givenMaxCap)
+
+		var wg sync.WaitGroup
+		wg.Add(test.givenWorkerCnt)
+		for i := 0; i < test.givenWorkerCnt; i++ {
+			go func(i int) {
+				pool.Execute(func() {
+					defer wg.Done()
+
+					time.Sleep(1000 * time.Millisecond)
+				})
+			}(i)
 		}
-		So(len(errResults), ShouldEqual, cnt/2)
-		for i := range errResults {
-			So(errResults[i].Message, ShouldStartWith, msgPrefix)
-			So(errResults[i].Error.Error(), ShouldEqual, errMsg)
-		}
-	})
+
+		wg.Wait()
+
+		assert.LessOrEqual(t, len(pool.workers), test.wantWorkerCnt, "workers count should be less than or equal to pool capacity")
+
+		pool.Destroy()
+	}
 }

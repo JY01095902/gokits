@@ -4,77 +4,54 @@ import (
 	"sync"
 )
 
-type Task struct {
-	Id      string
-	Job     func() error
-	Message string
-}
-
-type TaskResult struct {
-	TaskId  string
-	Status  string
-	Error   error
-	Message string
-}
-
-type ResultHandler func(result TaskResult)
-
 type Pool struct {
-	workersCount   int
-	tasksChannel   <-chan Task
-	waitGroup      *sync.WaitGroup
-	resultsChannel chan TaskResult
+	capacity int
+	tasks    chan func()
+	workers  []worker
+	locker   sync.Locker
 }
 
-func NewPool(workersCnt int, tasksChan <-chan Task) Pool {
+func NewPool(cap int) (Pool, error) {
+	if cap <= 0 {
+		return Pool{}, ErrInvalidCapacity
+	}
+
 	pool := Pool{
-		workersCount: workersCnt,
-		tasksChannel: tasksChan,
-		waitGroup:    &sync.WaitGroup{},
+		capacity: cap,
+		tasks:    make(chan func()),
+		workers:  []worker{},
+		locker:   &sync.Mutex{},
 	}
 
-	return pool
+	return pool, nil
 }
 
-func NewPoolWithResultHandler(workersCnt int, tasksChan <-chan Task, resultHandler ResultHandler) Pool {
-	pool := NewPool(workersCnt, tasksChan)
-	pool.resultsChannel = make(chan TaskResult)
+func (p *Pool) Execute(task func()) {
+	p.locker.Lock()
+	if len(p.workers) < int(p.capacity) {
+		w := worker{}
+		p.workers = append(p.workers, w)
+		w.do(p.tasks)
+		p.tasks <- task
 
-	go func() {
-		for res := range pool.resultsChannel {
-			resultHandler(res)
+		p.locker.Unlock()
+		return
+	}
+	p.locker.Unlock()
+
+retrieve:
+	for i := range p.workers {
+		if !p.workers[i].isWorking {
+			p.workers[i].do(p.tasks)
+			p.tasks <- task
+
+			return
 		}
-	}()
-
-	return pool
-}
-
-func (pool Pool) run() {
-	pool.waitGroup.Add(1)
-
-	var wg sync.WaitGroup
-	wg.Add(pool.workersCount)
-	for i := 1; i <= pool.workersCount; i++ {
-		worker := NewWorker(i)
-		go func(wg *sync.WaitGroup) {
-			defer wg.Done()
-
-			worker.Do(pool.tasksChannel, pool.resultsChannel)
-		}(&wg)
-	}
-	wg.Wait()
-
-	if pool.resultsChannel != nil {
-		close(pool.resultsChannel)
 	}
 
-	pool.waitGroup.Done()
+	goto retrieve
 }
 
-func (pool Pool) Run() {
-	go pool.run()
-}
-
-func (pool Pool) Wait() {
-	pool.waitGroup.Wait()
+func (p *Pool) Destroy() {
+	close(p.tasks)
 }
