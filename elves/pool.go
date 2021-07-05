@@ -1,4 +1,8 @@
-package routine
+/*
+	Idea of package name "elves" is from "house-elves"
+*/
+
+package elves
 
 import (
 	"sync"
