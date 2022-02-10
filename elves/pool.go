@@ -33,7 +33,10 @@ func NewPool(cap int) (Pool, error) {
 func (p *Pool) Execute(task func()) {
 	p.locker.Lock()
 	if len(p.workers) < int(p.capacity) {
-		w := worker{}
+		w := worker{
+			isWorking: false,
+			locker:    &sync.RWMutex{},
+		}
 		p.workers = append(p.workers, w)
 		w.do(p.tasks)
 		p.tasks <- task
@@ -45,8 +48,12 @@ func (p *Pool) Execute(task func()) {
 
 retrieve:
 	for i := range p.workers {
-		if !p.workers[i].isWorking {
-			p.workers[i].do(p.tasks)
+		w := p.workers[i]
+		w.locker.RLock()
+		isWorking := w.isWorking
+		w.locker.RUnlock()
+		if !isWorking {
+			w.do(p.tasks)
 			p.tasks <- task
 
 			return
